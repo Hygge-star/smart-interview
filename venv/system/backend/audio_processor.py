@@ -1,51 +1,65 @@
-import os
-import time
-from flask import request, jsonify
-import requests
-import json
 import base64
+import hashlib
+import hmac
+import json
+import time
 from datetime import datetime
+from urllib.parse import urlparse, urlencode
+import requests
+from configparser import ConfigParser
+
+config = ConfigParser()
+config.read('config.ini')
 
 class AudioProcessor:
-    def __init__(self, app):
-        self.app = app
-        self.setup_routes()
+    def __init__(self):
+        if config.has_section('IFLYTEK') and config.has_option('IFLYTEK', 'ASR_API_KEY') and config.has_option('IFLYTEK', 'ASR_API_SECRET'):
+            self.asr_api_key = config.get('IFLYTEK', 'ASR_API_KEY')
+            self.asr_api_secret = config.get('IFLYTEK', 'ASR_API_SECRET')
+        else:
+            raise ValueError("Missing 'ASR_API_KEY' or 'ASR_API_SECRET' in 'IFLYTEK' section of config.ini")
+        self.buffer = b''
+        self.last_word_time = datetime.now()
+        self.word_count = 0
         
-    def setup_routes(self):
-        @self.app.route('/api/audio_stream', methods=['POST'])
-        def handle_audio_stream():
-            audio_data = request.files.get('audio')
-            timestamp = request.form.get('timestamp')
-            
-            # 保存音频临时文件
-            temp_path = f"temp/audio_{timestamp}.wav"
-            audio_data.save(temp_path)
-            
-            # 调用讯飞API
-            result = self.call_xunfei_asr(temp_path)
-            
-            # 分析语速和停顿
-            analysis = self.analyze_speech(result)
-            
-            return jsonify({
-                "status": "success",
-                "transcript": result,
-                "analysis": analysis
-            })
+    def transcribe(self, audio_chunk):
+        """调用讯飞语音识别API"""
+        url = "wss://iat-api.xfyun.cn/v2/iat"
+        now = datetime.utcnow().strftime('%a, %d %b %Y %H:%M:%S GMT')
+        signature_origin = f"host: iat-api.xfyun.cn\ndate: {now}\nGET /v2/iat HTTP/1.1"
+        signature_sha = hmac.new(
+            self.asr_api_secret.encode('utf-8'),
+            signature_origin.encode('utf-8'),
+            digestmod=hashlib.sha256
+        ).digest()
+        signature = base64.b64encode(signature_sha).decode(encoding='utf-8')
+        authorization = f'api_key="{self.asr_api_key}", algorithm="hmac-sha256", headers="host date request-line", signature="{signature}"'
+        
+        # 实际开发中需使用WebSocket连接
+        # 此处简化为模拟返回
+        return "这是模拟的语音识别文本", datetime.now().timestamp()
     
-    def call_xunfei_asr(self, audio_path):
-        # 这里实现讯飞语音识别API调用
-        # 实际实现需要替换为真实的API调用代码
-        return "模拟转录文本"
-    
-    def analyze_speech(self, transcript):
-        # 简单语速分析
-        words = len(transcript.split())
-        duration = 10  # 假设10秒音频
-        words_per_minute = (words / duration) * 60
+    def analyze_speech(self, text, start_time, end_time):
+        """分析语速和停顿"""
+        duration = end_time - start_time
+        words = text.split()
+        self.word_count += len(words)
+        
+        # 计算语速 (字/分钟)
+        speech_rate = (len(text) / duration) * 60 if duration > 0 else 0
+        
+        # 检测停顿 (超过1秒无语音)
+        pause_duration = 0
+        current_time = datetime.now()
+        if (current_time - self.last_word_time).total_seconds() > 1.0:
+            pause_duration = (current_time - self.last_word_time).total_seconds()
+        
+        self.last_word_time = current_time
         
         return {
-            "speaking_speed": words_per_minute,
-            "pause_count": 0,  # 实际需要分析音频波形
-            "emotion_score": 0.8  # 如果API支持
+            "transcript": text,
+            "speech_rate": round(speech_rate, 1),
+            "pause_duration": round(pause_duration, 1),
+            "start_time": start_time,
+            "end_time": end_time
         }
